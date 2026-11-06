@@ -187,6 +187,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # The runner takes each line of a script as its own command, so the test's time limit and log are in a script.
       - name: Run the integration test on an emulator
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
@@ -194,7 +195,16 @@ jobs:
           arch: x86_64
           target: google_apis
           working-directory: example
-          script: flutter test integration_test -d emulator-5554
+          script: ../.github/scripts/emulator-test.sh
+
+      - name: Keep the emulator's log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: emulator-logcat
+          path: ${{ runner.temp }}/logcat.txt
+          if-no-files-found: ignore
+          retention-days: 14
 
   # The same round trip on iOS's simulator, once with each package manager Flutter supports.
   ios:
