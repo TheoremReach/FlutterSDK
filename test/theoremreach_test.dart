@@ -116,6 +116,34 @@ void main() {
       expect(host.starts, <String>['start key user-1', 'start key user-1']);
     });
 
+    test('leaves nothing started after overlapping starts that both fail, and a retry starts', () async {
+      host.startError = <Object?>['no_activity', 'No activity to start from.', null];
+
+      final Future<void> first = TheoremReach.initialize(apiKey: 'key', userId: 'user-1');
+      final Future<void> second = TheoremReach.initialize(apiKey: 'key', userId: 'user-2');
+      await expectLater(first, throwsA(isA<PlatformException>()));
+      await expectLater(second, throwsA(isA<PlatformException>()));
+      await expectLater(TheoremReach.showRewardCenter(), throwsStateError);
+
+      host.startError = null;
+      await TheoremReach.initialize(apiKey: 'key', userId: 'user-1');
+
+      expect(host.starts, <String>['start key user-1', 'start key user-2', 'start key user-1']);
+    });
+
+    test('shares an unfinished start with a second call for the same key and user, its error too', () async {
+      host.holdStart = Completer<void>();
+      host.startError = <Object?>['no_activity', 'No activity to start from.', null];
+
+      final Future<void> first = TheoremReach.initialize(apiKey: 'key', userId: 'user-1');
+      final Future<void> second = TheoremReach.initialize(apiKey: 'key', userId: 'user-1');
+      host.holdStart!.complete();
+
+      await expectLater(first, throwsA(isA<PlatformException>()));
+      await expectLater(second, throwsA(isA<PlatformException>()));
+      expect(host.starts, <String>['start key user-1']);
+    });
+
     test("lets the calls right after it through before its reply, in order", () async {
       host.holdStart = Completer<void>();
 
@@ -283,6 +311,32 @@ void main() {
       await settle();
 
       expect(rewards, isEmpty);
+    });
+
+    test('wait on through a failed start for another user', () async {
+      await nativeSends('onReward', <Object?>[260]);
+      host.startError = <Object?>['no_activity', 'No activity to start from.', null];
+      await expectLater(TheoremReach.initialize(apiKey: 'key', userId: 'user-2'), throwsA(isA<PlatformException>()));
+
+      final List<int> rewards = <int>[];
+      TheoremReach.onReward.listen(rewards.add);
+      await settle();
+
+      expect(rewards, <int>[260]);
+    });
+
+    test("for the last user don't reach a listener while another user's start is on its way", () async {
+      final List<int> rewards = <int>[];
+      TheoremReach.onReward.listen(rewards.add);
+      host.holdStart = Completer<void>();
+
+      final Future<void> switched = TheoremReach.initialize(apiKey: 'key', userId: 'user-2');
+      await nativeSends('onReward', <Object?>[260]);
+      host.holdStart!.complete();
+      await switched;
+      await nativeSends('onReward', <Object?>[500]);
+
+      expect(rewards, <int>[500]);
     });
 
     test("that arrive after another user's start are that user's", () async {

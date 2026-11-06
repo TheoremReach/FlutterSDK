@@ -14,11 +14,12 @@ abstract final class TheoremReach {
   /// Starts the SDK for this user, with your app's API key from the TheoremReach dashboard. The user's ID is the one
   /// TheoremReach's server-side reward callback reports.
   ///
-  /// Call it before the other calls. Calling it again for the same key and user does nothing. Calling it for another
-  /// user drops the rewards still waiting for an [onReward] listener, since they were the last user's.
+  /// Call it before the other calls. Calling it again for the same key and user does nothing, and shares the start
+  /// that's on its way, if there is one. Once a start for another user succeeds, the rewards still waiting for an
+  /// [onReward] listener are dropped, since they were the last user's; if it fails, they wait on.
   ///
-  /// Throws an [ArgumentError] when either argument is empty. On Android it throws a `PlatformException` when the app
-  /// has no activity to start from.
+  /// Throws an [ArgumentError] when either argument is empty. On Android it throws a `PlatformException` (code
+  /// `no_activity`) when the app has no activity to start from yet; call it again once one is attached.
   static Future<void> initialize({required String apiKey, required String userId}) => _sdk.initialize(apiKey, userId);
 
   /// Opens the reward center, at [placementId] when you give one.
@@ -89,48 +90,62 @@ final class _TheoremReachSdk implements TheoremReachFlutterApi {
   final StreamController<void> rewardCenterClosed = StreamController<void>.broadcast(sync: true);
   final StreamController<bool> surveyAvailable = StreamController<bool>.broadcast(sync: true);
 
-  final List<int> _waitingRewards = <int>[];
+  // Rewards no listener has had yet, each with the user the SDK earned it for: only the current user's go out.
+  final List<({String userId, int quantity})> _waitingRewards = <({String userId, int quantity})>[];
   bool _receiving = false;
-  String? _apiKey;
-  String? _userId;
+  // The key and user of the last initialize, and the start made for them, which a call for the same pair shares. Set
+  // before the start's reply, so the calls an app makes right after an initialize it doesn't await go through: the
+  // platform takes them in order, after the start.
+  ({String apiKey, String userId})? _requested;
+  Future<void> _requestedStart = Future<void>.value();
+  // The pair the native SDK last started for. Every reward it sends before a start's reply is the last user's, and
+  // every one after it the new user's, since the platform's messages keep their order.
+  ({String apiKey, String userId})? _started;
+  // Counts the initializes, so only the latest decides the state when it fails.
+  int _generation = 0;
 
-  Future<void> initialize(String apiKey, String userId) async {
-    _checkNotEmpty(apiKey, 'apiKey');
-    _checkNotEmpty(userId, 'userId');
+  Future<void> initialize(String apiKey, String userId) {
+    if (apiKey.isEmpty) {
+      return Future<void>.error(ArgumentError.value(apiKey, 'apiKey', 'must not be empty'));
+    }
+    if (userId.isEmpty) {
+      return Future<void>.error(ArgumentError.value(userId, 'userId', 'must not be empty'));
+    }
+    final ({String apiKey, String userId}) pair = (apiKey: apiKey, userId: userId);
     // Each native start fetches the user afresh and checks for rewards, so a second one could hand a waiting reward
     // over twice (iOS); a start also resets the settings.
-    if (apiKey == _apiKey && userId == _userId) {
-      return;
+    if (pair == _requested) {
+      return _requestedStart;
     }
     if (!_receiving) {
       TheoremReachFlutterApi.setUp(this);
       _receiving = true;
     }
-    final String? previousApiKey = _apiKey;
-    final String? previousUserId = _userId;
-    if (userId != previousUserId) {
-      _waitingRewards.clear();
-    }
-    // Set before the start's reply, so the calls an app makes right after an initialize it doesn't await go through.
-    // The platform takes them in order, after the start.
-    _apiKey = apiKey;
-    _userId = userId;
+    _requested = pair;
+    return _requestedStart = _start(pair, ++_generation);
+  }
+
+  Future<void> _start(({String apiKey, String userId}) pair, int generation) async {
     try {
-      await _host.start(apiKey, userId);
+      await _host.start(pair.apiKey, pair.userId);
     } catch (_) {
-      _apiKey = previousApiKey;
-      _userId = previousUserId;
+      // The SDK stays with the last pair it started for, and its user's waiting rewards are the current user's again.
+      // An initialize made since decides for itself.
+      if (generation == _generation) {
+        _requested = _started;
+        _requestedStart = Future<void>.value();
+        scheduleMicrotask(_deliverWaitingRewards);
+      }
       rethrow;
     }
-    // The SDK sends every reward it had before this start ahead of the start's reply, so one that came in meanwhile
-    // with no listener was the last user's too.
-    if (userId != previousUserId) {
-      _waitingRewards.clear();
+    _started = pair;
+    if (generation == _generation) {
+      _waitingRewards.removeWhere((reward) => reward.userId != pair.userId);
     }
   }
 
   Future<T> call<T>(String name, Future<T> Function(TheoremReachHostApi host) body) async {
-    if (_apiKey == null) {
+    if (_requested == null) {
       throw StateError('TheoremReach.$name: call TheoremReach.initialize first.');
     }
     return body(_host);
@@ -148,17 +163,23 @@ final class _TheoremReachSdk implements TheoremReachFlutterApi {
 
   @override
   void onReward(int quantity) {
-    if (rewards.hasListener) {
-      rewards.add(quantity);
-    } else {
-      _waitingRewards.add(quantity);
+    final String? userId = (_started ?? _requested)?.userId;
+    if (userId == null) {
+      return;
     }
+    _waitingRewards.add((userId: userId, quantity: quantity));
+    _deliverWaitingRewards();
   }
 
-  // Each reward leaves the queue as it's delivered, so one that a listener throws on isn't delivered twice.
+  // Each reward leaves the queue as it's delivered, so one that a listener throws on isn't delivered twice. The current
+  // user is read for each, since a listener can start the SDK for another.
   void _deliverWaitingRewards() {
-    while (_waitingRewards.isNotEmpty && rewards.hasListener) {
-      rewards.add(_waitingRewards.removeAt(0));
+    while (rewards.hasListener) {
+      final int index = _waitingRewards.indexWhere((reward) => reward.userId == _requested?.userId);
+      if (index == -1) {
+        return;
+      }
+      rewards.add(_waitingRewards.removeAt(index).quantity);
     }
   }
 
@@ -170,10 +191,4 @@ final class _TheoremReachSdk implements TheoremReachFlutterApi {
 
   @override
   void onSurveyAvailable(bool available) => surveyAvailable.add(available);
-
-  static void _checkNotEmpty(String value, String name) {
-    if (value.isEmpty) {
-      throw ArgumentError.value(value, name, 'must not be empty');
-    }
-  }
 }
