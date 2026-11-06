@@ -21,7 +21,13 @@ The package bundles the iOS SDK, for Swift Package Manager (Flutter's default fr
 nothing else to add on iOS. Android takes `com.theoremreach:theoremreach` from Maven Central.
 
 On Flutter 3.35 to 3.43, iOS builds use CocoaPods, those versions' default. An app on one of them that turned Swift
-Package Manager on turns it off for this package (`flutter config --no-enable-swift-package-manager`), or moves to 3.44.
+Package Manager on moves to 3.44, or turns it off in its own `pubspec.yaml`:
+
+```yaml
+flutter:
+  config:
+    enable-swift-package-manager: false
+```
 
 ## Get your API key
 
@@ -29,30 +35,72 @@ Sign up for a developer account, create an app [here](https://theoremreach.com/d
 
 ## Usage
 
+Listen to `onReward` from a part of your app that's alive while the reward center is open, such as its root, and start
+the SDK once you know the user:
+
 ```dart
 import 'dart:async';
 
+import 'package:flutter/material.dart';
 import 'package:theoremreach_sdk/theoremreach_sdk.dart';
 
-// Once you know the user.
-Future<void> startTheoremReach(String userId) async {
-  await TheoremReach.initialize(apiKey: 'YOUR_API_KEY', userId: userId);
-  // Any settings go after the start, which resets some of them.
-  await TheoremReach.setNavigationBarText('Earn rewards');
+class App extends StatefulWidget {
+  const App({super.key});
+
+  @override
+  State<App> createState() => _AppState();
 }
 
-// Listen from a part of your app that's alive while the reward center is open, such as its root.
-final StreamSubscription<int> rewards = TheoremReach.onReward.listen((int quantity) {
-  // Credit `quantity` of your currency to the user.
-});
+class _AppState extends State<App> {
+  late final StreamSubscription<int> _rewards;
 
-// When the user is ready to take surveys.
-Future<void> openSurveys() => TheoremReach.showRewardCenter();
+  @override
+  void initState() {
+    super.initState();
+    _rewards = TheoremReach.onReward.listen((int quantity) {
+      // Credit `quantity` of your currency to the user.
+    });
+    _startTheoremReach('THE_USER_ID');
+  }
+
+  @override
+  void dispose() {
+    _rewards.cancel();
+    super.dispose();
+  }
+
+  // Once you know the user: the ID TheoremReach's server-side reward callback reports.
+  Future<void> _startTheoremReach(String userId) async {
+    await TheoremReach.initialize(apiKey: 'YOUR_API_KEY', userId: userId);
+    // Any settings go after the start, which resets some of them.
+    await TheoremReach.setNavigationBarText('Earn rewards');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      home: Scaffold(
+        body: Center(
+          child: FilledButton(
+            // When the user is ready to take surveys.
+            onPressed: () => TheoremReach.showRewardCenter(),
+            child: const Text('Earn rewards'),
+          ),
+        ),
+      ),
+    );
+  }
+}
 ```
 
-A reward that arrives while nothing listens to `onReward` waits for the next listener, unless the SDK starts for another
-user first: a waiting reward is only ever the current user's. The wait is in memory, so a reward is lost if the app is
-killed, or hot restarted, while it waits.
+A reward that arrives while nothing listens to `onReward` waits for the next listener. A waiting reward is only ever the
+current user's:
+
+- from an `initialize` for another user until its start succeeds, the last user's rewards wait rather than reach a
+  listener, and the success drops them;
+- if that start fails, they reach the listeners after all.
+
+The wait is in memory, so a reward is lost if the app is killed, or hot restarted, while it waits.
 
 ### Calls
 
@@ -73,7 +121,7 @@ Each call returns a `Future`, which fails:
 - with a `StateError` for a call before `initialize`;
 - with an `ArgumentError` from `initialize`, for an empty key or user ID;
 - with a `PlatformException` (code `no_activity`) from `initialize` on Android, when the app has no activity yet, as
-  with an engine started before its activity.
+  with an engine started before its activity. Call `initialize` again once the app has one.
 
 ### Streams
 
@@ -110,7 +158,7 @@ an app can pause for the reward center and resume at its close.
 ## Example app
 
 `example/` holds an app that opens the reward center and logs every event, on TheoremReach's test apps. From
-`example/`, run `flutter run`.
+`example/`, run `flutter run`. It's made from Flutter 3.47's app template, the Flutter CI builds it with.
 
 ## Other platforms
 

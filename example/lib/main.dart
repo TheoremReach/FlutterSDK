@@ -82,9 +82,9 @@ class _ExampleScreenState extends State<ExampleScreen> {
     if (!mounted) {
       return;
     }
-    final TimeOfDay time = TimeOfDay.now();
-    final String seconds = DateTime.now().second.toString().padLeft(2, '0');
-    setState(() => _log.insert(0, '${time.format(context)}:$seconds  $line'));
+    final DateTime now = DateTime.now();
+    final String time = [now.hour, now.minute, now.second].map((int part) => part.toString().padLeft(2, '0')).join(':');
+    setState(() => _log.insert(0, '$time  $line'));
   }
 
   // The settings go after the start, which resets some of them.
