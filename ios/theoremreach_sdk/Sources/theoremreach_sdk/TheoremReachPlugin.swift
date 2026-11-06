@@ -92,10 +92,13 @@ public final class TheoremReachPlugin: NSObject, FlutterPlugin, TheoremReachHost
   }
 
   // The root view controller of the foreground scene's key window: the SDK presents from the top of what that one
-  // presents. Flutter's registrar names its view controller only from Flutter 3.38. With none, the SDK finds its own.
+  // presents. Flutter's registrar names its view controller only from Flutter 3.38. With no scene in the foreground,
+  // it's nil, and the SDK finds its own.
   private static func presentingViewController() -> UIViewController? {
     let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-    let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+    let scene =
+      scenes.first { $0.activationState == .foregroundActive }
+      ?? scenes.first { $0.activationState == .foregroundInactive }
     return (scene?.keyWindow ?? scene?.windows.first)?.rootViewController
   }
 
