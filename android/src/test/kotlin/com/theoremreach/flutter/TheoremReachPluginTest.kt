@@ -2,6 +2,8 @@ package com.theoremreach.flutter
 
 import android.app.Activity
 import android.app.Application
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.plugin.common.BinaryMessenger
@@ -22,6 +24,7 @@ import org.mockito.Mockito.mockingDetails
 import org.mockito.Mockito.never
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
+import org.mockito.Mockito.withSettings
 import org.mockito.Mockito.`when`
 import theoremreach.com.theoremreach.TheoremReach
 import theoremreach.com.theoremreach.TheoremReachRewardListener
@@ -36,13 +39,13 @@ class TheoremReachPluginTest {
   private val application: Application = mock(Application::class.java)
   private val activity: Activity = mock(Activity::class.java)
   private val messenger: BinaryMessenger = mock(BinaryMessenger::class.java)
+  private val engine = mock(FlutterPlugin.FlutterPluginBinding::class.java)
   private val plugin = TheoremReachPlugin()
 
   @Before
   fun setUp() {
     statics = mockStatic(TheoremReach::class.java)
     statics.`when`<TheoremReach> { TheoremReach.getInstance() }.thenReturn(sdk)
-    val engine = mock(FlutterPlugin.FlutterPluginBinding::class.java)
     `when`(engine.binaryMessenger).thenReturn(messenger)
     plugin.onAttachedToEngine(engine)
     `when`(activity.application).thenReturn(application)
@@ -53,11 +56,25 @@ class TheoremReachPluginTest {
     statics.close()
   }
 
-  // The callbacks the plugin registered with the application, which every activity's pause and resume reach.
-  private fun attachActivity(): Application.ActivityLifecycleCallbacks {
+  private fun bindingFor(activity: Activity): ActivityPluginBinding {
     val binding = mock(ActivityPluginBinding::class.java)
     `when`(binding.activity).thenReturn(activity)
-    plugin.onAttachedToActivity(binding)
+    return binding
+  }
+
+  // An activity that reports its lifecycle, as Flutter's and AndroidX's do, in the given state.
+  private fun activityIn(state: Lifecycle.State): Activity {
+    val activity = mock(Activity::class.java, withSettings().extraInterfaces(LifecycleOwner::class.java))
+    val lifecycle = mock(Lifecycle::class.java)
+    `when`(lifecycle.currentState).thenReturn(state)
+    `when`((activity as LifecycleOwner).lifecycle).thenReturn(lifecycle)
+    `when`(activity.application).thenReturn(application)
+    return activity
+  }
+
+  // The callbacks the plugin registered with the application, which every activity's pause and resume reach.
+  private fun attachActivity(): Application.ActivityLifecycleCallbacks {
+    plugin.onAttachedToActivity(bindingFor(activity))
     val callbacks = ArgumentCaptor.forClass(Application.ActivityLifecycleCallbacks::class.java)
     verify(application, atLeastOnce()).registerActivityLifecycleCallbacks(callbacks.capture())
     return callbacks.allValues.last()
@@ -198,6 +215,66 @@ class TheoremReachPluginTest {
     verify(application).unregisterActivityLifecycleCallbacks(any())
     verify(sdk).onPause()
     verify(sdk, never()).showRewardCenter(any())
+  }
+
+  @Test
+  fun `an activity attached while it's paused, as a FlutterFragment's host can be, gets no show until it resumes`() {
+    val host = activityIn(Lifecycle.State.STARTED)
+    plugin.onAttachedToActivity(bindingFor(host))
+    plugin.start("key", "user-1")
+
+    plugin.showRewardCenter(null)
+    verify(sdk, never()).showRewardCenter(any())
+
+    val callbacks = ArgumentCaptor.forClass(Application.ActivityLifecycleCallbacks::class.java)
+    verify(application).registerActivityLifecycleCallbacks(callbacks.capture())
+    callbacks.value.onActivityResumed(host)
+    plugin.showRewardCenter(null)
+    verify(sdk).showRewardCenter("")
+  }
+
+  @Test
+  fun `an activity attached while it's resumed shows`() {
+    plugin.onAttachedToActivity(bindingFor(activityIn(Lifecycle.State.RESUMED)))
+    plugin.start("key", "user-1")
+
+    plugin.showRewardCenter(null)
+
+    verify(sdk).showRewardCenter("")
+  }
+
+  @Test
+  fun `after a configuration change, the new activity's pause and resume are the ones that count`() {
+    val callbacks = started()
+    plugin.onDetachedFromActivityForConfigChanges()
+    val recreated = mock(Activity::class.java)
+    `when`(recreated.application).thenReturn(application)
+    plugin.onReattachedToActivityForConfigChanges(bindingFor(recreated))
+
+    callbacks.onActivityResumed(activity)
+    verify(sdk, never()).onResume(recreated)
+    callbacks.onActivityPaused(recreated)
+    plugin.showRewardCenter(null)
+    verify(sdk, never()).showRewardCenter(any())
+    callbacks.onActivityResumed(recreated)
+    plugin.showRewardCenter(null)
+
+    verify(application).unregisterActivityLifecycleCallbacks(callbacks)
+    verify(sdk).onResume(recreated)
+    verify(sdk).showRewardCenter("")
+  }
+
+  @Test
+  fun `a reward that comes after the engine has gone stays with the SDK`() {
+    started()
+    val listener = rewardListener()
+
+    plugin.onDetachedFromEngine(engine)
+
+    // The SDK confirms a reward only once its listener returns, and keeps it for its next check when the listener
+    // throws.
+    assertThrows(IllegalStateException::class.java) { listener.onReward(260) }
+    assertEquals(0, sentToDart("onReward"))
   }
 
   @Test

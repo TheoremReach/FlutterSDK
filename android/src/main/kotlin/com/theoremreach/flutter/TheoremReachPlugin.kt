@@ -3,6 +3,8 @@ package com.theoremreach.flutter
 import android.app.Activity
 import android.app.Application
 import android.os.Bundle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -66,8 +68,11 @@ class TheoremReachPlugin : FlutterPlugin, ActivityAware, TheoremReachHostApi {
     TheoremReachRewardListener,
     TheoremReachSurveyListener,
     TheoremReachSurveyAvailableListener {
+    // The SDK confirms a reward with TheoremReach once this returns, and keeps it for its next check when this throws.
+    // So with no engine to hand it to (the app's activity finished during the check, say), it stays with the SDK.
     override fun onReward(quantity: Int) {
-      flutterApi?.onReward(quantity.toLong()) {}
+      val flutterApi = flutterApi ?: throw IllegalStateException("No Flutter engine to hand the reward to")
+      flutterApi.onReward(quantity.toLong()) {}
     }
 
     override fun onRewardCenterOpened() {
@@ -106,10 +111,13 @@ class TheoremReachPlugin : FlutterPlugin, ActivityAware, TheoremReachHostApi {
 
   override fun onDetachedFromActivity() = detach()
 
-  // Flutter attaches while the activity is created, before it can pause.
+  // An activity that reports its lifecycle starts paused unless it's resumed: a FlutterFragment can attach to a host
+  // that's paused. One that's being created resumes in the same step, before the platform takes any call from Dart.
   private fun attach(binding: ActivityPluginBinding) {
-    activity = binding.activity.also { it.application.registerActivityLifecycleCallbacks(activityCallbacks) }
-    paused = false
+    val activity = binding.activity
+    this.activity = activity
+    paused = (activity as? LifecycleOwner)?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED) == false
+    activity.application.registerActivityLifecycleCallbacks(activityCallbacks)
   }
 
   private fun detach() {
