@@ -15,8 +15,11 @@ abstract final class TheoremReach {
   /// TheoremReach's server-side reward callback reports.
   ///
   /// Call it before the other calls. Calling it again for the same key and user does nothing, and shares the start
-  /// that's on its way, if there is one. Once a start for another user succeeds, the rewards still waiting for an
-  /// [onReward] listener are dropped, since they were the last user's; if it fails, they wait on.
+  /// that's on its way, if there is one.
+  ///
+  /// A reward goes only to the current user's [onReward] listeners. From a call for another user until its start
+  /// succeeds, the last user's rewards wait, even with a listener there, and the success drops them, so none reaches
+  /// the wrong account. If the start fails, they reach the listeners after all.
   ///
   /// Throws an [ArgumentError] when either argument is empty. On Android it throws a `PlatformException` (code
   /// `no_activity`) when the app has no activity to start from yet; call it again once one is attached.
@@ -56,8 +59,9 @@ abstract final class TheoremReach {
   /// The currency the user earned, in your app's own units, each time TheoremReach rewards them.
   ///
   /// The SDK confirms a reward with TheoremReach once it has handed it over, so a reward that arrives while nothing
-  /// listens here (before the screen that listens is built, say) waits for the next listeners. A waiting reward lives
-  /// in memory, so it's lost if the app is killed or hot restarted.
+  /// listens here (before the screen that listens is built, say) waits for the next listeners. So does one for the
+  /// last user while [initialize] starts the SDK for another ([initialize] says what becomes of it). A waiting reward
+  /// lives in memory, so it's lost if the app is killed or hot restarted.
   static Stream<int> get onReward => _sdk.rewards.stream;
 
   /// The reward center opened.
