@@ -1,0 +1,60 @@
+name: Publish
+# A release is a version tag pushed to a commit on master. pub.dev publishes only from a workflow that a pushed tag
+# starts, and a tag a workflow makes with its own token starts no other workflow, so the tag is pushed by hand, on
+# Andy's go. The publish then waits for his approval in the pub.dev environment, which pub.dev requires too.
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+jobs:
+  # The tag must name pubspec.yaml's version, on a commit on master whose CI push run passed. A version pub.dev has
+  # already (1.0.0, published by hand before automated publishing could be turned on) publishes nothing.
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check the release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version: *//p' pubspec.yaml)
+          [ "$version" = "$TAG" ] || { echo "The tag ${TAG} isn't pubspec.yaml's version, ${version}."; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/master || { echo "${GITHUB_SHA} isn't on master."; exit 1; }
+          passed=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --event push \
+            --status success --json databaseId --jq length)
+          [ "$passed" -gt 0 ] || { echo "CI's push run hasn't passed on ${GITHUB_SHA}."; exit 1; }
+          status=$(curl -s -o /dev/null -w '%{http_code}' --retry 3 \
+            "https://pub.dev/api/packages/theoremreach_sdk/versions/${version}")
+          if [ "$status" = 200 ]; then
+            echo "pub.dev has ${version} already, so there's nothing to publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The Dart team's workflow, which pub.dev's docs ask for: it publishes with GitHub's OIDC token, so no secret is
+  # stored, and sets up Flutter for a Flutter package.
+  publish:
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    permissions:
+      id-token: write
+    uses: dart-lang/setup-dart/.github/workflows/publish.yml@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+    with:
+      environment: pub.dev

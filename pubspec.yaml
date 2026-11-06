@@ -1,0 +1,37 @@
+name: theoremreach_sdk
+description: "TheoremReach's rewarded surveys for Flutter apps on Android and iOS: open the reward center and hear each reward."
+version: 1.0.0
+homepage: https://theoremreach.com
+repository: https://github.com/TheoremReach/FlutterSDK
+issue_tracker: https://github.com/TheoremReach/FlutterSDK/issues
+documentation: https://theoremreach.com/docs/flutter
+topics:
+  - surveys
+  - rewards
+  - monetization
+
+# The floor: Flutter 3.35 (Dart 3.9). CI builds a fresh 3.35 app with the package on both platforms.
+environment:
+  sdk: ^3.9.0
+  flutter: ">=3.35.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  meta: ^1.16.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  # 26.3.4 is Pigeon's last release for Flutter 3.35; the code it writes has to build at the floor.
+  pigeon: 26.3.4
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.theoremreach.flutter
+        pluginClass: TheoremReachPlugin
+      ios:
+        pluginClass: TheoremReachPlugin
