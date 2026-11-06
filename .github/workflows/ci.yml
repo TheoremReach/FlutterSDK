@@ -41,11 +41,8 @@ jobs:
       - name: Get the packages
         run: flutter pub get
 
-      # Pigeon's own output is left as it writes it (the check below).
       - name: Check the formatting
-        run: |
-          find lib test pigeons example/lib example/test example/integration_test -name '*.dart' ! -name '*.g.dart' -print0 \
-            | xargs -0 dart format --output=none --set-exit-if-changed
+        run: dart format --output=none --set-exit-if-changed lib test pigeons example/lib example/test example/integration_test
 
       - name: Analyze
         run: flutter analyze
@@ -57,25 +54,38 @@ jobs:
         working-directory: example
         run: flutter test
 
-      # The channel code is generated from pigeons/theoremreach.dart and committed: it must be what Pigeon writes now.
+      # The channel code is generated from pigeons/theoremreach.dart, its Dart formatted, and committed: it must be what
+      # Pigeon writes now.
       - name: Check Pigeon's output is current
         run: |
           dart run pigeon --input pigeons/theoremreach.dart
-          git diff --exit-code || { echo "Run dart run pigeon --input pigeons/theoremreach.dart and commit."; exit 1; }
+          dart format lib/src/messages.g.dart
+          git diff --exit-code || {
+            echo "Run dart run pigeon --input pigeons/theoremreach.dart, then dart format lib/src/messages.g.dart, and commit."
+            exit 1
+          }
 
-      # pub.dev's own checks, and what it would publish: the package and the bundled iOS SDK, without the CI files.
+      # pub.dev's own checks, which fail the step on a warning, and what it would publish: the package and the bundled iOS
+      # SDK, without the CI files.
       - name: Check the package
+        shell: bash
         run: |
           flutter pub publish --dry-run | tee "$RUNNER_TEMP/publish.txt"
-          for required in LICENSE README.md CHANGELOG.md pubspec.yaml lib/theoremreach_sdk.dart \
-            android/build.gradle.kts ios/theoremreach_sdk.podspec ios/theoremreach_sdk/Package.swift \
-            TheoremReachSDK.xcframework/ios-arm64/TheoremReachSDK.framework/TheoremReachSDK; do
-            grep -qF "$(basename "$required")" "$RUNNER_TEMP/publish.txt" || { echo "the package lacks ${required}"; exit 1; }
+          python3 .github/scripts/published-files.py "$RUNNER_TEMP/publish.txt" > "$RUNNER_TEMP/files.txt"
+          framework=ios/theoremreach_sdk/Frameworks/TheoremReachSDK.xcframework
+          for required in LICENSE README.md CHANGELOG.md pubspec.yaml lib/theoremreach_sdk.dart lib/src/theoremreach.dart \
+            lib/src/messages.g.dart android/build.gradle.kts \
+            android/src/main/kotlin/com/theoremreach/flutter/TheoremReachPlugin.kt ios/theoremreach_sdk.podspec \
+            ios/theoremreach_sdk/Package.swift ios/theoremreach_sdk/Sources/theoremreach_sdk/TheoremReachPlugin.swift \
+            "$framework/Info.plist" "$framework/ios-arm64/TheoremReachSDK.framework/TheoremReachSDK" \
+            "$framework/ios-arm64_x86_64-simulator/TheoremReachSDK.framework/TheoremReachSDK"; do
+            grep -qxF "$required" "$RUNNER_TEMP/files.txt" || { echo "the package lacks ${required}"; exit 1; }
           done
-          if grep -qE '\.github|ci\.yml' "$RUNNER_TEMP/publish.txt"; then
+          if grep -E '^\.github/' "$RUNNER_TEMP/files.txt"; then
             echo "the package carries the CI files"
             exit 1
           fi
+          echo "$(wc -l < "$RUNNER_TEMP/files.txt") files, as expected"
 
   # The package bundles TheoremReach's iOS SDK and depends on its Android SDK. Both must be the released builds: the
   # xcframework byte for byte the one at TheoremReach/iOSSDK's tag, each slice declaring that version, and the Android
@@ -157,6 +167,15 @@ jobs:
       - name: Test the Android plugin
         working-directory: example/android
         run: ./gradlew --no-daemon :theoremreach_sdk:testDebugUnitTest
+
+      # The plugin applies the Kotlin Gradle plugin only when the Android Gradle plugin doesn't compile Kotlin itself.
+      # The example, as Flutter's template makes it, turns AGP 9's built-in Kotlin off, so this builds it with it on.
+      - name: Build the example with AGP's built-in Kotlin
+        working-directory: example
+        run: |
+          sed -i 's/^android.builtInKotlin=false$/android.builtInKotlin=true/' android/gradle.properties
+          grep -qx 'android.builtInKotlin=true' android/gradle.properties
+          flutter build apk --debug
 
   # The plugin's round trip on Android's emulator: the native SDK starts, and its survey check reaches Dart.
   android-emulator:
