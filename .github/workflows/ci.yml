@@ -277,11 +277,31 @@ jobs:
           xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner -configuration Debug \
             -destination "id=$SIMULATOR" -parallel-testing-enabled NO -only-testing:RunnerTests | xcbeautify
 
-      # The tool can wait for the app with no limit of its own, printing nothing, so the step has one.
+      # The tool finds the app through the Dart VM service address the app logs. On GitHub's macOS runners it sometimes
+      # never picks it up, though the app has started and logged it, and then waits with no limit of its own, printing
+      # nothing. So an attempt that hasn't finished in 10 minutes (one takes 2 to 9, its build included) is stopped,
+      # with everything it started (set -m gives it a process group of its own), and run once more. A test that fails
+      # isn't retried.
       - name: Run the integration test on a simulator
         working-directory: example
-        timeout-minutes: 20
-        run: flutter test integration_test -d "$SIMULATOR"
+        timeout-minutes: 22
+        run: |
+          set -m
+          for attempt in 1 2; do
+            rm -f "$RUNNER_TEMP/timed-out"
+            flutter test integration_test -d "$SIMULATOR" &
+            tool=$!
+            (sleep 600 && touch "$RUNNER_TEMP/timed-out" && kill -TERM -- "-$tool") &
+            timer=$!
+            status=0
+            wait "$tool" || status=$?
+            kill -- "-$timer" 2>/dev/null || true
+            [ "$status" = 0 ] && exit 0
+            [ -e "$RUNNER_TEMP/timed-out" ] || exit "$status"
+            echo "::warning::Attempt $attempt of the integration test didn't finish in 10 minutes, so it was stopped."
+            xcrun simctl terminate "$SIMULATOR" com.theoremreach.TheoremReachFlutterExample || true
+          done
+          exit 1
 
       - name: The app's log, when the integration test fails
         if: failure()
