@@ -64,23 +64,28 @@ class TheoremReachPlugin : FlutterPlugin, ActivityAware, TheoremReachHostApi {
 
   // The SDK keeps one listener of each kind for the whole process, while an app can run more than one Flutter engine:
   // a deep link or a notification that opens the app's activity while the reward center is on top starts a second
-  // one, since a singleTop activity is reused only when it's on top. So the SDK gets one listener, which passes each
-  // callback to the latest engine that started it and is still attached, and an engine that goes hands them back to
-  // the one before it. An object of its own, off the plugin's type: an app's generated registrant compiles against the
+  // one, since a singleTop activity is reused only when it's on top, and an app can cache engines that stay attached
+  // after their activity goes. So the SDK gets one listener, which passes each callback to the engine that last
+  // started the SDK or showed the reward center and is still attached, and an engine that goes hands them back to the
+  // one before it. An object of its own, off the plugin's type: an app's generated registrant compiles against the
   // plugin's class, and can't see the SDK's classes.
   private object SdkListener :
     TheoremReachRewardListener,
     TheoremReachSurveyListener,
     TheoremReachSurveyAvailableListener {
-    // The plugins whose engines started the SDK and are still attached, the latest last.
+    // The plugins whose engines started the SDK and are still attached, the one that last started it or showed last.
     private val plugins = mutableListOf<TheoremReachPlugin>()
 
     fun take(plugin: TheoremReachPlugin, sdk: TheoremReach) {
-      plugins.remove(plugin)
-      plugins.add(plugin)
+      latest(plugin)
       sdk.setTheoremReachRewardListener(this)
       sdk.setTheoremReachSurveyListener(this)
       sdk.setTheoremReachSurveyAvailableListener(this)
+    }
+
+    fun latest(plugin: TheoremReachPlugin) {
+      plugins.remove(plugin)
+      plugins.add(plugin)
     }
 
     fun release(plugin: TheoremReachPlugin) {
@@ -104,9 +109,10 @@ class TheoremReachPlugin : FlutterPlugin, ActivityAware, TheoremReachHostApi {
       plugin.flutterApi?.onRewardCenterOpened {}
     }
 
-    // To the engine that heard the open, while it's attached.
+    // To the engine that heard the open, while it's attached. Once it has gone, no other engine heard the open, so
+    // none hears the close.
     override fun onRewardCenterClosed() {
-      val plugin = plugins.lastOrNull { it.rewardCenterOpen } ?: plugins.lastOrNull() ?: return
+      val plugin = plugins.lastOrNull { it.rewardCenterOpen } ?: return
       plugin.rewardCenterOpen = false
       plugin.flutterApi?.onRewardCenterClosed {}
     }
@@ -144,10 +150,12 @@ class TheoremReachPlugin : FlutterPlugin, ActivityAware, TheoremReachHostApi {
     activity.application.registerActivityLifecycleCallbacks(activityCallbacks)
   }
 
+  // A paused activity took itself back from the SDK at its pause. Since then the SDK may hold another engine's activity,
+  // as when Back from this engine's resumed the one under it, so this one's going leaves it.
   private fun detach() {
     activity?.application?.unregisterActivityLifecycleCallbacks(activityCallbacks)
     activity = null
-    if (started) {
+    if (started && !paused) {
       TheoremReach.getInstance().onPause()
     }
   }
@@ -176,6 +184,8 @@ class TheoremReachPlugin : FlutterPlugin, ActivityAware, TheoremReachHostApi {
     if (!started || activity == null || paused) {
       return
     }
+    // The reward center's open, close and rewards go to the engine that showed it.
+    SdkListener.latest(this)
     TheoremReach.getInstance().showRewardCenter(placementId.orEmpty())
   }
 

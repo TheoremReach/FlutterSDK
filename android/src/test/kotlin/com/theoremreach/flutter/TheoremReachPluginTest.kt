@@ -18,6 +18,7 @@ import org.mockito.ArgumentCaptor
 import org.mockito.ArgumentMatchers.any
 import org.mockito.MockedStatic
 import org.mockito.Mockito.atLeastOnce
+import org.mockito.Mockito.clearInvocations
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.mockStatic
 import org.mockito.Mockito.mockingDetails
@@ -61,9 +62,18 @@ class TheoremReachPluginTest {
 
   private val engines = mutableListOf<Pair<TheoremReachPlugin, FlutterPlugin.FlutterPluginBinding>>()
 
+  // A second engine's plugin, its messenger (which counts what its Dart hears), its activity, and the callbacks it
+  // registered for that activity's pause and resume.
+  private data class Engine(
+    val plugin: TheoremReachPlugin,
+    val messenger: BinaryMessenger,
+    val activity: Activity,
+    val callbacks: Application.ActivityLifecycleCallbacks,
+  )
+
   // A second Flutter engine's plugin, started from its own activity: what a deep link to a singleTop activity under the
-  // reward center makes. Its messenger counts what its Dart hears.
-  private fun secondEngineStarted(): Pair<TheoremReachPlugin, BinaryMessenger> {
+  // reward center makes, or an app that opens a FlutterActivity of its own per screen.
+  private fun secondEngineStarted(): Engine {
     val other = TheoremReachPlugin()
     val otherMessenger = mock(BinaryMessenger::class.java)
     val otherEngine = mock(FlutterPlugin.FlutterPluginBinding::class.java)
@@ -73,8 +83,10 @@ class TheoremReachPluginTest {
     val otherActivity = mock(Activity::class.java)
     `when`(otherActivity.application).thenReturn(application)
     other.onAttachedToActivity(bindingFor(otherActivity))
+    val callbacks = ArgumentCaptor.forClass(Application.ActivityLifecycleCallbacks::class.java)
+    verify(application, atLeastOnce()).registerActivityLifecycleCallbacks(callbacks.capture())
     other.start("key", "user-1")
-    return other to otherMessenger
+    return Engine(other, otherMessenger, otherActivity, callbacks.allValues.last())
   }
 
   private fun detachEngine(other: TheoremReachPlugin) {
@@ -369,6 +381,53 @@ class TheoremReachPluginTest {
     // With no engine left the SDK keeps the reward, as before.
     plugin.onDetachedFromEngine(engine)
     assertThrows(IllegalStateException::class.java) { rewardListener().onReward(100) }
+  }
+
+  // Back from a second engine's activity: it pauses, the first resumes, and the second is destroyed after. The SDK
+  // keeps one activity for the process, so the second's detach mustn't take the first's away: a show would open nothing.
+  @Test
+  fun `an engine whose activity paused before it went leaves the SDK the activity on screen`() {
+    val callbacks = started()
+    callbacks.onActivityPaused(activity)
+    val second = secondEngineStarted()
+
+    second.callbacks.onActivityPaused(second.activity)
+    callbacks.onActivityResumed(activity)
+    clearInvocations(sdk)
+    second.plugin.onDetachedFromActivity()
+
+    verify(sdk, never()).onPause()
+  }
+
+  // An app that keeps a second engine cached: it stays attached when its activity goes, and the first engine's show
+  // is still the first engine's reward center.
+  @Test
+  fun `a show's open and close go to the engine that showed`() {
+    started()
+    val second = secondEngineStarted()
+    second.plugin.onDetachedFromActivity()
+
+    plugin.showRewardCenter(null)
+    surveyListener().onRewardCenterOpened()
+    surveyListener().onRewardCenterClosed()
+
+    assertEquals(1, sentToDart("onRewardCenterOpened"))
+    assertEquals(1, sentToDart("onRewardCenterClosed"))
+    assertEquals(0, sentToDart("onRewardCenterOpened", second.messenger))
+    assertEquals(0, sentToDart("onRewardCenterClosed", second.messenger))
+  }
+
+  @Test
+  fun `a close whose open went to an engine that has gone reaches no other engine`() {
+    started()
+    val second = secondEngineStarted()
+    surveyListener().onRewardCenterOpened()
+    assertEquals(1, sentToDart("onRewardCenterOpened", second.messenger))
+
+    detachEngine(second.plugin)
+    surveyListener().onRewardCenterClosed()
+
+    assertEquals(0, sentToDart("onRewardCenterClosed"))
   }
 
   @Test
