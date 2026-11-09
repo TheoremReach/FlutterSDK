@@ -29,12 +29,19 @@ public final class TheoremReachPlugin: NSObject, FlutterPlugin, TheoremReachHost
   }
 
   func start(apiKey: String, userId: String) throws {
-    // Starting the SDK forgets an open reward center, which then never reports its close, though it stays on screen
-    // until the user closes it.
-    reportUnreportedClose()
+    // The SDK's start clears its note that the reward center is open, and without it the SDK reports no close. So with
+    // one on screen, the start puts the note back: the close comes at the user's X, as on Android, and the app's status
+    // bar style with it. With none on screen, an open Dart heard went without its close, and Dart hears it now.
+    let onScreen = rewardCenterOnScreen()
+    if !onScreen {
+      reportUnreportedClose()
+    }
     TheoremReach.initWithApiKey(apiKey, userId: userId)
     guard let sdk = TheoremReach.getInstance() else {
       return
+    }
+    if onScreen {
+      sdk.rewardCenterOpen = true
     }
     sdk.rewardListenerDelegate = self
     sdk.surveyListenerDelegate = self

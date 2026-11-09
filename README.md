@@ -137,10 +137,8 @@ an app can pause for the reward center and resume at its close.
 
 - On Android, `showRewardCenter` while the app is in the background, or while the reward center is open, does nothing:
   no reward center opens, and no event comes.
-- On iOS the close comes at another moment in two cases. A start for another user while the reward center is open
-  reports it at the start, though the reward center stays on screen until the user closes it. And one that UIKit took
-  away without its own close (when the app dismisses the screen it opened over, or everything over its root) reports
-  it at the next show or start.
+- On iOS, a reward center that UIKit took away without its own close (when the app dismisses the screen it opened
+  over, or everything over its root) reports its close at the next show or start.
 
 ## Troubleshooting
 
