@@ -62,34 +62,57 @@ class TheoremReachPlugin : FlutterPlugin, ActivityAware, TheoremReachHostApi {
     override fun onActivityDestroyed(activity: Activity) {}
   }
 
-  // The SDK's listener is an object of its own, off the plugin's type: an app's generated registrant compiles against
-  // the plugin's class, and can't see the SDK's classes.
-  private val sdkListener = object :
+  // The SDK keeps one listener of each kind for the whole process, while an app can run more than one Flutter engine:
+  // a deep link or a notification that opens the app's activity while the reward center is on top starts a second
+  // one, since a singleTop activity is reused only when it's on top. So the SDK gets one listener, which passes each
+  // callback to the latest engine that started it and is still attached, and an engine that goes hands them back to
+  // the one before it. An object of its own, off the plugin's type: an app's generated registrant compiles against the
+  // plugin's class, and can't see the SDK's classes.
+  private object SdkListener :
     TheoremReachRewardListener,
     TheoremReachSurveyListener,
     TheoremReachSurveyAvailableListener {
+    // The plugins whose engines started the SDK and are still attached, the latest last.
+    private val plugins = mutableListOf<TheoremReachPlugin>()
+
+    fun take(plugin: TheoremReachPlugin, sdk: TheoremReach) {
+      plugins.remove(plugin)
+      plugins.add(plugin)
+      sdk.setTheoremReachRewardListener(this)
+      sdk.setTheoremReachSurveyListener(this)
+      sdk.setTheoremReachSurveyAvailableListener(this)
+    }
+
+    fun release(plugin: TheoremReachPlugin) {
+      plugins.remove(plugin)
+    }
+
     // The SDK confirms a reward with TheoremReach once this returns, and keeps it for its next check when this throws.
     // So with no engine to hand it to (the app's activity finished during the check, say), it stays with the SDK.
     override fun onReward(quantity: Int) {
-      val flutterApi = flutterApi ?: throw IllegalStateException("No Flutter engine to hand the reward to")
+      val flutterApi = plugins.lastOrNull()?.flutterApi
+        ?: throw IllegalStateException("No Flutter engine to hand the reward to")
       flutterApi.onReward(quantity.toLong()) {}
     }
 
     override fun onRewardCenterOpened() {
-      if (rewardCenterOpen) {
+      val plugin = plugins.lastOrNull() ?: return
+      if (plugin.rewardCenterOpen) {
         return
       }
-      rewardCenterOpen = true
-      flutterApi?.onRewardCenterOpened {}
+      plugin.rewardCenterOpen = true
+      plugin.flutterApi?.onRewardCenterOpened {}
     }
 
+    // To the engine that heard the open, while it's attached.
     override fun onRewardCenterClosed() {
-      rewardCenterOpen = false
-      flutterApi?.onRewardCenterClosed {}
+      val plugin = plugins.lastOrNull { it.rewardCenterOpen } ?: plugins.lastOrNull() ?: return
+      plugin.rewardCenterOpen = false
+      plugin.flutterApi?.onRewardCenterClosed {}
     }
 
     override fun theoremreachSurveyAvailable(surveyAvailable: Boolean) {
-      flutterApi?.onSurveyAvailable(surveyAvailable) {}
+      plugins.lastOrNull()?.flutterApi?.onSurveyAvailable(surveyAvailable) {}
     }
   }
 
@@ -101,6 +124,7 @@ class TheoremReachPlugin : FlutterPlugin, ActivityAware, TheoremReachHostApi {
   override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
     TheoremReachHostApi.setUp(binding.binaryMessenger, null)
     flutterApi = null
+    SdkListener.release(this)
   }
 
   override fun onAttachedToActivity(binding: ActivityPluginBinding) = attach(binding)
@@ -142,9 +166,7 @@ class TheoremReachPlugin : FlutterPlugin, ActivityAware, TheoremReachHostApi {
     } else {
       sdk.onResume(activity)
     }
-    sdk.setTheoremReachRewardListener(sdkListener)
-    sdk.setTheoremReachSurveyListener(sdkListener)
-    sdk.setTheoremReachSurveyAvailableListener(sdkListener)
+    SdkListener.take(this, sdk)
     started = true
   }
 

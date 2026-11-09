@@ -53,7 +53,34 @@ class TheoremReachPluginTest {
 
   @After
   fun tearDown() {
+    // The SDK's listener is one for the process, so every engine a test attached goes, as an app's would.
+    engines.forEach { (plugin, binding) -> plugin.onDetachedFromEngine(binding) }
+    plugin.onDetachedFromEngine(engine)
     statics.close()
+  }
+
+  private val engines = mutableListOf<Pair<TheoremReachPlugin, FlutterPlugin.FlutterPluginBinding>>()
+
+  // A second Flutter engine's plugin, started from its own activity: what a deep link to a singleTop activity under the
+  // reward center makes. Its messenger counts what its Dart hears.
+  private fun secondEngineStarted(): Pair<TheoremReachPlugin, BinaryMessenger> {
+    val other = TheoremReachPlugin()
+    val otherMessenger = mock(BinaryMessenger::class.java)
+    val otherEngine = mock(FlutterPlugin.FlutterPluginBinding::class.java)
+    `when`(otherEngine.binaryMessenger).thenReturn(otherMessenger)
+    other.onAttachedToEngine(otherEngine)
+    engines.add(other to otherEngine)
+    val otherActivity = mock(Activity::class.java)
+    `when`(otherActivity.application).thenReturn(application)
+    other.onAttachedToActivity(bindingFor(otherActivity))
+    other.start("key", "user-1")
+    return other to otherMessenger
+  }
+
+  private fun detachEngine(other: TheoremReachPlugin) {
+    val entry = engines.first { it.first === other }
+    other.onDetachedFromEngine(entry.second)
+    engines.remove(entry)
   }
 
   private fun bindingFor(activity: Activity): ActivityPluginBinding {
@@ -86,25 +113,25 @@ class TheoremReachPluginTest {
     return callbacks
   }
 
-  // The listeners the plugin gave the SDK at its start.
+  // The listeners the SDK holds: the last ones a start gave it.
   private fun rewardListener(): TheoremReachRewardListener =
     ArgumentCaptor.forClass(TheoremReachRewardListener::class.java).also {
-      verify(sdk).setTheoremReachRewardListener(it.capture())
+      verify(sdk, atLeastOnce()).setTheoremReachRewardListener(it.capture())
     }.value
 
   private fun surveyListener(): TheoremReachSurveyListener =
     ArgumentCaptor.forClass(TheoremReachSurveyListener::class.java).also {
-      verify(sdk).setTheoremReachSurveyListener(it.capture())
+      verify(sdk, atLeastOnce()).setTheoremReachSurveyListener(it.capture())
     }.value
 
   private fun surveyAvailableListener(): TheoremReachSurveyAvailableListener =
     ArgumentCaptor.forClass(TheoremReachSurveyAvailableListener::class.java).also {
-      verify(sdk).setTheoremReachSurveyAvailableListener(it.capture())
+      verify(sdk, atLeastOnce()).setTheoremReachSurveyAvailableListener(it.capture())
     }.value
 
-  // The messages the plugin sent Dart on one of the Flutter API's channels.
-  private fun sentToDart(method: String): Int =
-    mockingDetails(messenger).invocations.count {
+  // The messages a plugin sent its Dart on one of the Flutter API's channels: the first engine's by default.
+  private fun sentToDart(method: String, to: BinaryMessenger = messenger): Int =
+    mockingDetails(to).invocations.count {
       it.method.name == "send" && it.arguments[0] == "$FLUTTER_API.$method"
     }
 
@@ -290,6 +317,58 @@ class TheoremReachPluginTest {
     listener.onRewardCenterOpened()
     assertEquals(1, sentToDart("onRewardCenterClosed"))
     assertEquals(2, sentToDart("onRewardCenterOpened"))
+  }
+
+  // On the Pixel (2026-11-09): with the reward center open, a deep link started a second activity, and its engine's
+  // start took the SDK's listeners. Back and the X then left the first engine's Dart with the open and no close, and
+  // no callback after.
+  @Test
+  fun `an engine that comes and goes while the reward center is open hands the callbacks back`() {
+    started()
+    surveyListener().onRewardCenterOpened()
+
+    val (second, _) = secondEngineStarted()
+    detachEngine(second)
+    surveyListener().onRewardCenterClosed()
+    surveyListener().onRewardCenterOpened()
+    surveyListener().onRewardCenterClosed()
+
+    assertEquals(2, sentToDart("onRewardCenterOpened"))
+    assertEquals(2, sentToDart("onRewardCenterClosed"))
+  }
+
+  @Test
+  fun `the close goes to the engine that heard the open`() {
+    started()
+    surveyListener().onRewardCenterOpened()
+    val (_, secondMessenger) = secondEngineStarted()
+
+    surveyListener().onRewardCenterClosed()
+
+    assertEquals(1, sentToDart("onRewardCenterClosed"))
+    assertEquals(0, sentToDart("onRewardCenterClosed", secondMessenger))
+  }
+
+  @Test
+  fun `rewards and survey checks go to the latest engine that started, and back when it goes`() {
+    started()
+    val (second, secondMessenger) = secondEngineStarted()
+
+    rewardListener().onReward(260)
+    surveyAvailableListener().theoremreachSurveyAvailable(true)
+    assertEquals(1, sentToDart("onReward", secondMessenger))
+    assertEquals(1, sentToDart("onSurveyAvailable", secondMessenger))
+    assertEquals(0, sentToDart("onReward"))
+
+    detachEngine(second)
+    rewardListener().onReward(500)
+    surveyAvailableListener().theoremreachSurveyAvailable(false)
+    assertEquals(1, sentToDart("onReward"))
+    assertEquals(1, sentToDart("onSurveyAvailable"))
+
+    // With no engine left the SDK keeps the reward, as before.
+    plugin.onDetachedFromEngine(engine)
+    assertThrows(IllegalStateException::class.java) { rewardListener().onReward(100) }
   }
 
   @Test
