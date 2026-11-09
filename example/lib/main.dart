@@ -139,8 +139,8 @@ class _ExampleScreenState extends State<ExampleScreen> {
     );
   }
 
-  // Open the reward center within the five seconds, and the start for the other user comes while it's open: on iOS,
-  // Dart should hear its close then.
+  // Open the reward center within the five seconds, and the start for the other user comes while it's open. Its close
+  // comes at the X, and the status bar keeps the reward center's style until then.
   void _switchUserSoon() {
     final String next = _userId == userId ? otherUserId : userId;
     _append('Starting for $next in 5 seconds');
