@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# The example's integration test on the booted emulator. The tool finds the app through the Dart VM service address
-# the app logs, and sometimes never picks it up, though the app has started and logged it; it then waits with no
-# limit of its own. So an attempt that hasn't finished in 10 minutes (one takes 3 to 6, its build included) is
-# stopped and run once more; a test that fails isn't retried. The emulator's log is kept either way, for the run's
-# artifact.
+# The example's integration test on the booted emulator. The tool sometimes never starts the test on an app that has
+# started and connected: it waits for the test's isolate to register its service extension, which takes under a second
+# when it works, and then waits with no limit of its own. Each launch is a fresh chance, so an attempt that hasn't
+# finished in time is stopped and run again, up to three times. The first gets 10 minutes, since it builds the app; the
+# others reuse the build and get 5. A test that fails isn't retried. The emulator's log is kept either way, for the
+# run's artifact.
 set -uo pipefail
 
-for attempt in 1 2; do
+attempt=0
+for limit in 600 300 300; do
+  attempt=$((attempt + 1))
   status=0
-  timeout --kill-after=30 600 flutter test integration_test -d emulator-5554 || status=$?
+  timeout --kill-after=30 "$limit" flutter test integration_test -d emulator-5554 || status=$?
   [ "$status" = 124 ] || break
-  echo "Attempt $attempt of the integration test didn't finish in 10 minutes, so it was stopped."
+  echo "::warning::Attempt $attempt of the integration test didn't finish in $((limit / 60)) minutes, so it was stopped."
   adb -s emulator-5554 shell am force-stop com.theoremreach.flutterexample || true
 done
 adb -s emulator-5554 logcat -d > "$RUNNER_TEMP/logcat.txt" 2>&1 || true

@@ -277,28 +277,31 @@ jobs:
           xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner -configuration Debug \
             -destination "id=$SIMULATOR" -parallel-testing-enabled NO -only-testing:RunnerTests | xcbeautify
 
-      # The tool finds the app through the Dart VM service address the app logs. On GitHub's macOS runners it sometimes
-      # never picks it up, though the app has started and logged it, and then waits with no limit of its own, printing
-      # nothing. So an attempt that hasn't finished in 10 minutes (one takes 2 to 9, its build included) is stopped,
-      # with everything it started (set -m gives it a process group of its own), and run once more. A test that fails
-      # isn't retried.
+      # The tool sometimes never starts the test on an app that has started: in Flutter 3.47 it can launch the app before
+      # its simulator log reader is ready, miss the Dart VM service address the app logs, and wait with no limit of its
+      # own, printing nothing (flutter/flutter#181771; the fix isn't in a stable release yet). Each launch is a fresh
+      # chance, so an attempt that hasn't finished in time is stopped, with everything it started (set -m gives it a
+      # process group of its own), and run again, up to three times. The first gets 10 minutes, since it builds the
+      # app; the others reuse the build and get 5. A test that fails isn't retried.
       - name: Run the integration test on a simulator
         working-directory: example
-        timeout-minutes: 22
+        timeout-minutes: 24
         run: |
           set -m
-          for attempt in 1 2; do
+          attempt=0
+          for limit in 600 300 300; do
+            attempt=$((attempt + 1))
             rm -f "$RUNNER_TEMP/timed-out"
             flutter test integration_test -d "$SIMULATOR" &
             tool=$!
-            (sleep 600 && touch "$RUNNER_TEMP/timed-out" && kill -TERM -- "-$tool") &
+            (sleep "$limit" && touch "$RUNNER_TEMP/timed-out" && kill -TERM -- "-$tool") &
             timer=$!
             status=0
             wait "$tool" || status=$?
             kill -- "-$timer" 2>/dev/null || true
             [ "$status" = 0 ] && exit 0
             [ -e "$RUNNER_TEMP/timed-out" ] || exit "$status"
-            echo "::warning::Attempt $attempt of the integration test didn't finish in 10 minutes, so it was stopped."
+            echo "::warning::Attempt $attempt of the integration test didn't finish in $((limit / 60)) minutes, so it was stopped."
             xcrun simctl terminate "$SIMULATOR" com.theoremreach.TheoremReachFlutterExample || true
           done
           exit 1
