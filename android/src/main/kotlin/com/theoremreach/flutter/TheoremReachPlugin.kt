@@ -19,13 +19,13 @@ class TheoremReachPlugin : FlutterPlugin, ActivityAware, TheoremReachHostApi {
 
   private var flutterApi: TheoremReachFlutterApi? = null
   private var activity: Activity? = null
-  // The activity paused and hasn't resumed since. The SDK forgets its activity in onPause, and a show then reports an
-  // open that no reward center follows, so the plugin doesn't show until the activity resumes. That covers a show while
-  // the reward center is open too, since it pauses the activity under it.
+  // The activity paused and hasn't resumed since. The SDK forgets its activity in onPause, so a show then opens nothing,
+  // and the plugin doesn't show until the activity resumes. That covers a show while the reward center is open too,
+  // since it pauses the activity under it.
   private var paused = false
   private var started = false
-  // Dart heard the reward center open and hasn't heard it close. The SDK reports an open for every show it's asked for,
-  // so Dart hears one open for each close.
+  // Dart heard the reward center open and hasn't heard it close, so Dart hears one open for each close. The SDK reports
+  // them that way itself from 3.7.2.
   private var rewardCenterOpen = false
 
   // The activity's own pause and resume, which the SDK needs: it opens the reward center from the activity. (Flutter's

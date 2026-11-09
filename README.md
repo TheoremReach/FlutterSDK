@@ -1,7 +1,7 @@
 # TheoremReach Flutter SDK
 
-Monetize your users through rewarded surveys. This package wraps TheoremReach's native SDKs: Android 3.7.1 and iOS
-3.6.2.
+Monetize your users through rewarded surveys. This package wraps TheoremReach's native SDKs: Android 3.7.2 and iOS
+3.7.0.
 
 ## Requirements
 

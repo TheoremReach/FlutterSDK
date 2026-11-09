@@ -20,8 +20,8 @@ env:
   FLUTTER_VERSION: 3.47.9
   FLUTTER_FLOOR: 3.35.7
   # The native SDKs it wraps: the iOS one bundled from TheoremReach/iOSSDK's tag, the Android one from Maven Central.
-  IOS_SDK: 3.6.2
-  ANDROID_SDK: 3.7.1
+  IOS_SDK: 3.7.0
+  ANDROID_SDK: 3.7.2
 
 jobs:
   dart:
