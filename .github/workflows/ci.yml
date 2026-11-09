@@ -1,0 +1,355 @@
+name: CI
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The Flutter the package is developed on, and its floor (pubspec.yaml).
+  FLUTTER_VERSION: 3.47.9
+  FLUTTER_FLOOR: 3.35.7
+  # The native SDKs it wraps: the iOS one bundled from TheoremReach/iOSSDK's tag, the Android one from Maven Central.
+  IOS_SDK: 3.7.0
+  ANDROID_SDK: 3.7.2
+
+jobs:
+  dart:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Get the packages
+        run: flutter pub get
+
+      - name: Check the formatting
+        run: dart format --output=none --set-exit-if-changed lib test pigeons example/lib example/test example/integration_test
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test the Dart API
+        run: flutter test
+
+      - name: Test the example
+        working-directory: example
+        run: flutter test
+
+      # The channel code is generated from pigeons/theoremreach.dart, its Dart formatted, and committed: it must be what
+      # Pigeon writes now.
+      - name: Check Pigeon's output is current
+        run: |
+          dart run pigeon --input pigeons/theoremreach.dart
+          dart format lib/src/messages.g.dart
+          git diff --exit-code || {
+            echo "Run dart run pigeon --input pigeons/theoremreach.dart, then dart format lib/src/messages.g.dart, and commit."
+            exit 1
+          }
+
+      # pub.dev's own checks, which fail the step on a warning, and what it would publish: the package and the bundled iOS
+      # SDK, without the CI files.
+      - name: Check the package
+        shell: bash
+        run: |
+          flutter pub publish --dry-run | tee "$RUNNER_TEMP/publish.txt"
+          python3 .github/scripts/published-files.py "$RUNNER_TEMP/publish.txt" > "$RUNNER_TEMP/files.txt"
+          framework=ios/theoremreach_sdk/Frameworks/TheoremReachSDK.xcframework
+          for required in LICENSE README.md CHANGELOG.md pubspec.yaml lib/theoremreach_sdk.dart lib/src/theoremreach.dart \
+            lib/src/messages.g.dart android/build.gradle.kts \
+            android/src/main/kotlin/com/theoremreach/flutter/TheoremReachPlugin.kt ios/theoremreach_sdk.podspec \
+            ios/theoremreach_sdk/Package.swift ios/theoremreach_sdk/Sources/theoremreach_sdk/TheoremReachPlugin.swift \
+            "$framework/Info.plist" "$framework/ios-arm64/TheoremReachSDK.framework/TheoremReachSDK" \
+            "$framework/ios-arm64_x86_64-simulator/TheoremReachSDK.framework/TheoremReachSDK"; do
+            grep -qxF "$required" "$RUNNER_TEMP/files.txt" || { echo "the package lacks ${required}"; exit 1; }
+          done
+          if grep -E '^\.github/' "$RUNNER_TEMP/files.txt"; then
+            echo "the package carries the CI files"
+            exit 1
+          fi
+          echo "$(wc -l < "$RUNNER_TEMP/files.txt") files, as expected"
+
+  # The package bundles TheoremReach's iOS SDK and depends on its Android SDK. Both must be the released builds: the
+  # xcframework byte for byte the one at TheoremReach/iOSSDK's tag, each slice declaring that version, and the Android
+  # version the one the build names, served by Maven Central.
+  pins:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the Android SDK's version
+        run: |
+          grep -q "implementation(\"com.theoremreach:theoremreach:${ANDROID_SDK}\")" android/build.gradle.kts \
+            || { echo "android/build.gradle.kts doesn't depend on com.theoremreach:theoremreach:${ANDROID_SDK}"; exit 1; }
+          pom="https://repo1.maven.org/maven2/com/theoremreach/theoremreach/${ANDROID_SDK}/theoremreach-${ANDROID_SDK}.pom"
+          status=$(curl -s -o /dev/null -w '%{http_code}' --retry 3 "$pom")
+          [ "$status" = 200 ] || { echo "Maven Central answered ${status} for ${pom}"; exit 1; }
+          echo "Android SDK ${ANDROID_SDK}: in build.gradle.kts, and on Maven Central"
+
+      - name: Check the bundled iOS SDK against its tag
+        run: |
+          frameworks=ios/theoremreach_sdk/Frameworks
+          git clone --quiet --depth 1 --branch "$IOS_SDK" https://github.com/TheoremReach/iOSSDK.git "$RUNNER_TEMP/iossdk"
+          ours=$(cd "$frameworks" && find TheoremReachSDK.xcframework -type f -exec sha256sum {} + | sort -k2)
+          tags=$(cd "$RUNNER_TEMP/iossdk" && find TheoremReachSDK.xcframework -type f -exec sha256sum {} + | sort -k2)
+          if [ "$ours" != "$tags" ]; then
+            diff <(echo "$tags") <(echo "$ours") || true
+            echo "${frameworks}/TheoremReachSDK.xcframework differs from TheoremReach/iOSSDK at ${IOS_SDK}"
+            exit 1
+          fi
+          # Git's modes too: the framework binaries are executable at the tag.
+          our_modes=$(git ls-files -s "$frameworks/TheoremReachSDK.xcframework" | awk '{ print $1, $4 }' \
+            | sed "s| ${frameworks}/| |" | sort -k2)
+          tag_modes=$(git -C "$RUNNER_TEMP/iossdk" ls-files -s TheoremReachSDK.xcframework | awk '{ print $1, $4 }' | sort -k2)
+          if [ "$our_modes" != "$tag_modes" ]; then
+            diff <(echo "$tag_modes") <(echo "$our_modes") || true
+            echo "${frameworks}/TheoremReachSDK.xcframework's file modes differ from TheoremReach/iOSSDK at ${IOS_SDK}"
+            exit 1
+          fi
+          for plist in "$frameworks"/TheoremReachSDK.xcframework/*/TheoremReachSDK.framework/Info.plist; do
+            version=$(python3 -c "import plistlib, sys; print(plistlib.load(open(sys.argv[1], 'rb'))['CFBundleShortVersionString'])" "$plist")
+            [ "$version" = "$IOS_SDK" ] || { echo "${plist} declares ${version}, not ${IOS_SDK}"; exit 1; }
+          done
+          echo "iOS SDK ${IOS_SDK}: byte for byte TheoremReach/iOSSDK's tag, every slice declaring it"
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Java
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # For phones (arm64) and emulators (x86_64), as testers sideload it.
+      - name: Build the example's release APK
+        working-directory: example
+        run: flutter build apk --release --target-platform android-arm64,android-x64
+
+      - name: Keep the APK
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: example-apk
+          path: example/build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Test the Android plugin
+        working-directory: example/android
+        run: ./gradlew --no-daemon :theoremreach_sdk:testDebugUnitTest
+
+      # The plugin applies the Kotlin Gradle plugin only when the Android Gradle plugin doesn't compile Kotlin itself.
+      # The example, as Flutter's template makes it, turns AGP 9's built-in Kotlin off, so this builds it with it on.
+      - name: Build the example with AGP's built-in Kotlin
+        working-directory: example
+        run: |
+          sed -i 's/^android.builtInKotlin=false$/android.builtInKotlin=true/' android/gradle.properties
+          grep -qx 'android.builtInKotlin=true' android/gradle.properties
+          flutter build apk --debug
+
+  # The plugin's round trip on Android's emulator: the native SDK starts, and its survey check reaches Dart.
+  android-emulator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Java
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # The emulator needs hardware acceleration, which GitHub's Linux runners allow once /dev/kvm is open.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # The runner takes each line of a script as its own command, so the test's time limit and log are in a script.
+      - name: Run the integration test on an emulator
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          working-directory: example
+          script: ../.github/scripts/emulator-test.sh
+
+      - name: Keep the emulator's log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: emulator-logcat
+          path: ${{ runner.temp }}/logcat.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The same round trip on iOS's simulator, once with each package manager Flutter supports.
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        package-manager: [swift-package-manager, cocoapods]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Use Xcode 26
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: 26
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Choose the package manager
+        run: |
+          if [ "${{ matrix.package-manager }}" = cocoapods ]; then
+            flutter config --no-enable-swift-package-manager
+          else
+            flutter config --enable-swift-package-manager
+          fi
+
+      - name: Boot a simulator
+        run: |
+          udid=$(xcrun simctl list devices available --json \
+            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.name | startswith("iPhone"))][0].udid')
+          echo "SIMULATOR=$udid" >> "$GITHUB_ENV"
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+
+      # The Swift plugin's unit tests, in the example's RunnerTests. They come first, so a hang in the integration test
+      # can't hide them. On the booted simulator itself: parallel testing would shut it down to test on clones of it.
+      - name: Test the iOS plugin
+        working-directory: example
+        shell: bash
+        run: |
+          flutter build ios --simulator --debug --config-only
+          xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner -configuration Debug \
+            -destination "id=$SIMULATOR" -parallel-testing-enabled NO -only-testing:RunnerTests | xcbeautify
+
+      # The tool can wait for the app with no limit of its own, printing nothing, so the step has one.
+      - name: Run the integration test on a simulator
+        working-directory: example
+        timeout-minutes: 20
+        run: flutter test integration_test -d "$SIMULATOR"
+
+      - name: The app's log, when the integration test fails
+        if: failure()
+        run: |
+          xcrun simctl spawn "$SIMULATOR" log show --last 30m --style compact \
+            --predicate 'process == "Runner" OR subsystem CONTAINS "flutter"' | tail -400
+
+  # The floor: a fresh Flutter 3.35 app with the package, built in release as apps ship, on each platform. Its main.dart
+  # calls the package, so the build compiles its Dart, with the channel code Pigeon writes, at the floor's Dart.
+  floor-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: package
+
+      - name: Set up Java
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ env.FLUTTER_FLOOR }}
+          channel: stable
+          cache: true
+
+      - name: Make a fresh app with the package
+        run: package/.github/scripts/floor-app.sh
+
+      - name: Build it in release
+        working-directory: floor_app
+        run: flutter build apk --release
+
+  floor-ios:
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: package
+
+      # App Store uploads have needed Xcode 26 since 2026-04-28, so that's what a 3.35 app builds with now.
+      - name: Use Xcode 26
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: 26
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ env.FLUTTER_FLOOR }}
+          channel: stable
+          cache: true
+
+      - name: Make a fresh app with the package
+        run: package/.github/scripts/floor-app.sh
+
+      # 3.35's template targets iOS 13.0, below the package's 15.0, as the README says to raise.
+      - name: Build it in release for a device
+        working-directory: floor_app
+        run: |
+          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 13.0;/IPHONEOS_DEPLOYMENT_TARGET = 15.0;/g' ios/Runner.xcodeproj/project.pbxproj
+          flutter build ios --release --no-codesign
