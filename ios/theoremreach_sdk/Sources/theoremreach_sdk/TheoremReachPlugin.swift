@@ -44,7 +44,7 @@ public final class TheoremReachPlugin: NSObject, FlutterPlugin, TheoremReachHost
   func showRewardCenter(placementId: String?) throws {
     // One reward center at a time: a second would open over the first (a timer or a deep link can call this while one
     // is open), and the first's close would then never reach Dart.
-    if Self.rewardCenterOnScreen() {
+    if rewardCenterOnScreen() {
       return
     }
     // None is on screen, so an open Dart heard with no close yet went without reporting it: UIKit took the reward
@@ -58,7 +58,7 @@ public final class TheoremReachPlugin: NSObject, FlutterPlugin, TheoremReachHost
 
     // The SDK reports the reward center open before presenting it. If UIKit refused the presentation (the presenter
     // was mid-transition, say, or the last reward center was still sliding out), no close will come.
-    if !Self.rewardCenterOnScreen() {
+    if !rewardCenterOnScreen() {
       reportUnreportedClose()
     }
   }
@@ -87,7 +87,8 @@ public final class TheoremReachPlugin: NSObject, FlutterPlugin, TheoremReachHost
     TheoremReach.getInstance()?.navigationBarTextColor = color
   }
 
-  private static func rewardCenterOnScreen() -> Bool {
+  // Settable for the tests, which have no reward center on screen.
+  var rewardCenterOnScreen: () -> Bool = {
     TheoremReach.getInstance()?.rewardCenterViewController?.presentingViewController != nil
   }
 
