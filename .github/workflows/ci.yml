@@ -259,17 +259,16 @@ jobs:
             flutter config --enable-swift-package-manager
           fi
 
-      - name: Run the integration test on a simulator
-        working-directory: example
+      - name: Boot a simulator
         run: |
           udid=$(xcrun simctl list devices available --json \
             | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.name | startswith("iPhone"))][0].udid')
           echo "SIMULATOR=$udid" >> "$GITHUB_ENV"
           xcrun simctl boot "$udid"
           xcrun simctl bootstatus "$udid" -b
-          flutter test integration_test -d "$udid"
 
-      # The Swift plugin's unit tests, in the example's RunnerTests.
+      # The Swift plugin's unit tests, in the example's RunnerTests. They come first, so a hang in the integration test
+      # can't hide them.
       - name: Test the iOS plugin
         working-directory: example
         shell: bash
@@ -277,6 +276,18 @@ jobs:
           flutter build ios --simulator --debug --config-only
           xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner -configuration Debug \
             -destination "id=$SIMULATOR" -only-testing:RunnerTests | xcbeautify
+
+      # The tool can wait for the app with no limit of its own, printing nothing, so the step has one.
+      - name: Run the integration test on a simulator
+        working-directory: example
+        timeout-minutes: 20
+        run: flutter test integration_test -d "$SIMULATOR"
+
+      - name: The app's log, when the integration test fails
+        if: failure()
+        run: |
+          xcrun simctl spawn "$SIMULATOR" log show --last 30m --style compact \
+            --predicate 'process == "Runner" OR subsystem CONTAINS "flutter"' | tail -400
 
   # The floor: a fresh Flutter 3.35 app with the package, built in release as apps ship, on each platform. Its main.dart
   # calls the package, so the build compiles its Dart, with the channel code Pigeon writes, at the floor's Dart.
