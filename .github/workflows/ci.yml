@@ -268,14 +268,14 @@ jobs:
           xcrun simctl bootstatus "$udid" -b
 
       # The Swift plugin's unit tests, in the example's RunnerTests. They come first, so a hang in the integration test
-      # can't hide them.
+      # can't hide them. On the booted simulator itself: parallel testing would shut it down to test on clones of it.
       - name: Test the iOS plugin
         working-directory: example
         shell: bash
         run: |
           flutter build ios --simulator --debug --config-only
           xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner -configuration Debug \
-            -destination "id=$SIMULATOR" -only-testing:RunnerTests | xcbeautify
+            -destination "id=$SIMULATOR" -parallel-testing-enabled NO -only-testing:RunnerTests | xcbeautify
 
       # The tool can wait for the app with no limit of its own, printing nothing, so the step has one.
       - name: Run the integration test on a simulator
